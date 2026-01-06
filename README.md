@@ -11,9 +11,10 @@ Specific Affinity is designed to solve the problem of matching and clustering re
 - **Product matching**: Linking similar products across catalogs
 - **Address standardization**: Grouping addresses that refer to the same location
 
-**Supported Platforms:**
-- DuckDB (local/embedded)
-- Snowflake (cloud data warehouse)
+**Supported Platforms & Languages:**
+- Python + DuckDB (local/embedded)
+- Python + Snowflake (cloud data warehouse)
+- R with dplyr + data.table
 
 ## How It Works
 
@@ -60,14 +61,14 @@ Validate assignments and manage the system:
 specific-affinity/
 ├── README.md
 ├── requirements.txt
-├── python/                      # DuckDB implementation
-│   ├── config.py               # Configuration settings
-│   ├── prime_table.py          # Step 1: Create Prime Table
-│   ├── inference.py            # Step 2: Make Inference
-│   ├── cleanup.py              # Step 3: Unassigned Records Cleanup
-│   ├── categorization.py       # Step 4: Record Categorization
-│   ├── qa.py                   # Step 5: Quality Assurance
-│   └── main.py                 # Orchestrator script
+├── python/                      # Python + DuckDB implementation
+│   ├── config.py
+│   ├── prime_table.py
+│   ├── inference.py
+│   ├── cleanup.py
+│   ├── categorization.py
+│   ├── qa.py
+│   └── main.py
 ├── sql/                         # DuckDB SQL scripts
 │   ├── 01_create_prime_table.sql
 │   ├── 02_make_inference.sql
@@ -75,34 +76,184 @@ specific-affinity/
 │   ├── 04_categorization.sql
 │   └── 05_qa.sql
 ├── snowflake/                   # Snowflake implementation
-│   ├── snowflake_matcher.py    # Python class for Snowflake
-│   ├── matching_between_tables.sql  # Standalone SQL script
-│   └── example_usage.py        # Usage examples
+│   ├── snowflake_matcher.py
+│   ├── matching_between_tables.sql
+│   └── example_usage.py
+├── R/                           # R implementation
+│   ├── specific_affinity.R     # Main functions (dplyr + data.table)
+│   └── example_usage.R         # Usage examples
 └── examples/
-    └── example_usage.py        # DuckDB example with sample data
+    └── example_usage.py        # Python example with sample data
 ```
 
 ## Requirements
 
-- Python 3.8+
-
-Install dependencies:
+### Python
 ```bash
 pip install -r requirements.txt
+
+# Or individually:
+pip install duckdb pandas                    # For DuckDB
+pip install snowflake-connector-python       # For Snowflake
 ```
 
-Or install individually:
-```bash
-# For DuckDB
-pip install duckdb pandas
-
-# For Snowflake
-pip install snowflake-connector-python pandas
+### R
+```r
+install.packages(c("dplyr", "data.table", "stringr"))
 ```
 
 ---
 
-## DuckDB Quick Start
+## R Quick Start
+
+The R implementation uses `dplyr` for readable data manipulation and `data.table` for high-performance operations.
+
+### Match Two Tables
+
+```r
+source("R/specific_affinity.R")
+
+# Reference table (master vendor list)
+master_vendors <- data.frame(
+  vendor_id = c("V001", "V002", "V003"),
+  vendor_name = c("Netflix Inc", "Spotify Technology", "Amazon Web Services")
+)
+
+# Records to match
+incoming_data <- data.frame(
+  record_id = c("R001", "R002", "R003"),
+  merchant_name = c("NETFLIX STREAMING", "Spotify Premium", "Unknown Vendor")
+)
+
+# Match tables
+results <- match_tables(
+  table_a = master_vendors,
+  table_b = incoming_data,
+  id_col_a = "vendor_id",
+  id_col_b = "record_id",
+  text_col_a = "vendor_name",
+  text_col_b = "merchant_name",
+  similarity_threshold = 0.4
+)
+
+# View results
+print(results$results)
+print(results$stats)
+```
+
+### Cluster Similar Records (Create Prime Table)
+
+```r
+source("R/specific_affinity.R")
+
+# Transaction data with vendor variations
+transactions <- data.frame(
+  id = c("T001", "T002", "T003", "T004"),
+  memo = c("NETFLIX.COM", "NETFLIX SUBSCRIPTION",
+           "SPOTIFY USA", "SPOTIFY PREMIUM")
+)
+
+# Create clusters
+result <- create_prime_table(
+  df = transactions,
+  id_col = "id",
+  text_col = "memo",
+  similarity_threshold = 0.4
+)
+
+# View clustered data
+print(result$prime_table)
+print(result$stats)
+```
+
+### Match a Single Record
+
+```r
+source("R/specific_affinity.R")
+
+# Build reference data structures
+reference <- data.frame(
+  id = c("V001", "V002"),
+  name = c("Netflix Inc", "Spotify Technology")
+)
+
+blocking_keys <- create_blocking_keys(reference, "id", "name")
+weights <- calculate_weights(blocking_keys)
+
+# Match a single text value
+result <- match_single(
+  text = "NETFLIX PAYMENT",
+  blocking_keys = blocking_keys,
+  weights = weights,
+  reference_df = reference,
+  id_col = "id",
+  text_col = "name",
+  similarity_threshold = 0.3
+)
+
+print(result)
+```
+
+### Using with dplyr Pipelines
+
+```r
+library(dplyr)
+source("R/specific_affinity.R")
+
+# Match tables and analyze with dplyr
+results <- match_tables(table_a, table_b,
+                        "id_a", "id_b", "text_a", "text_b",
+                        similarity_threshold = 0.5)
+
+# Analyze results
+results$results %>%
+  as_tibble() %>%
+  group_by(match_status) %>%
+  summarise(
+    count = n(),
+    avg_score = mean(similarity_score, na.rm = TRUE)
+  )
+
+# Filter to matched only
+matched <- results$results %>%
+  as_tibble() %>%
+  filter(match_status == "MATCHED") %>%
+  select(table_b_id, matched_table_a_id, similarity_score)
+```
+
+### Custom Stop Words in R
+
+```r
+source("R/specific_affinity.R")
+
+# Add domain-specific stop words
+custom_stops <- c(
+  DEFAULT_STOP_WORDS,
+  "services", "solutions", "international", "group", "company"
+)
+
+results <- match_tables(
+  table_a, table_b,
+  "id_a", "id_b", "text_a", "text_b",
+  similarity_threshold = 0.5,
+  stop_words = custom_stops
+)
+```
+
+### R Function Reference
+
+| Function | Description |
+|----------|-------------|
+| `create_prime_table()` | Cluster similar records into groups |
+| `match_tables()` | Match records from table B against table A |
+| `match_single()` | Match a single text value against reference data |
+| `create_blocking_keys()` | Tokenize text into blocking keys |
+| `calculate_weights()` | Calculate TF-IDF style token weights |
+| `find_connected_components()` | Group related records into clusters |
+
+---
+
+## Python + DuckDB Quick Start
 
 ### Using Python
 
@@ -275,8 +426,8 @@ Key parameters to tune:
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `text_field` | Required | The text column to use for matching |
-| `id_field` | Required | Unique identifier column |
+| `text_field` / `text_col` | Required | The text column to use for matching |
+| `id_field` / `id_col` | Required | Unique identifier column |
 | `similarity_threshold` | 0.5 | Minimum score to consider a match |
 | `stop_words` | Common English | Words to exclude from tokenization |
 | `min_token_length` | 2 | Minimum characters for a valid token |
@@ -306,7 +457,7 @@ similarity = sum(weight for each shared token)
 ```
 
 ### Connected Components
-Graph-based clustering using recursive CTEs:
+Graph-based clustering using iterative label propagation:
 - Each record starts in its own cluster
 - Records sharing high-scoring matches are merged
 - Minimum cluster ID propagates through the graph
