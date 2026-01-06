@@ -1,2 +1,5 @@
 duckdb>=0.9.0
 pandas>=1.5.0
+
+# For Snowflake support
+snowflake-connector-python>=3.0.0
