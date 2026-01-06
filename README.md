@@ -11,6 +11,10 @@ Specific Affinity is designed to solve the problem of matching and clustering re
 - **Product matching**: Linking similar products across catalogs
 - **Address standardization**: Grouping addresses that refer to the same location
 
+**Supported Platforms:**
+- DuckDB (local/embedded)
+- Snowflake (cloud data warehouse)
+
 ## How It Works
 
 The framework uses a 5-step pipeline:
@@ -55,35 +59,50 @@ Validate assignments and manage the system:
 ```
 specific-affinity/
 ├── README.md
-├── python/
-│   ├── config.py           # Configuration settings
-│   ├── prime_table.py      # Step 1: Create Prime Table
-│   ├── inference.py        # Step 2: Make Inference
-│   ├── cleanup.py          # Step 3: Unassigned Records Cleanup
-│   ├── categorization.py   # Step 4: Record Categorization
-│   ├── qa.py               # Step 5: Quality Assurance
-│   └── main.py             # Orchestrator script
-├── sql/
+├── requirements.txt
+├── python/                      # DuckDB implementation
+│   ├── config.py               # Configuration settings
+│   ├── prime_table.py          # Step 1: Create Prime Table
+│   ├── inference.py            # Step 2: Make Inference
+│   ├── cleanup.py              # Step 3: Unassigned Records Cleanup
+│   ├── categorization.py       # Step 4: Record Categorization
+│   ├── qa.py                   # Step 5: Quality Assurance
+│   └── main.py                 # Orchestrator script
+├── sql/                         # DuckDB SQL scripts
 │   ├── 01_create_prime_table.sql
 │   ├── 02_make_inference.sql
 │   ├── 03_unassigned_cleanup.sql
 │   ├── 04_categorization.sql
 │   └── 05_qa.sql
+├── snowflake/                   # Snowflake implementation
+│   ├── snowflake_matcher.py    # Python class for Snowflake
+│   ├── matching_between_tables.sql  # Standalone SQL script
+│   └── example_usage.py        # Usage examples
 └── examples/
-    └── example_usage.py    # Example with sample data
+    └── example_usage.py        # DuckDB example with sample data
 ```
 
 ## Requirements
 
 - Python 3.8+
-- DuckDB
 
 Install dependencies:
 ```bash
-pip install duckdb pandas
+pip install -r requirements.txt
 ```
 
-## Quick Start
+Or install individually:
+```bash
+# For DuckDB
+pip install duckdb pandas
+
+# For Snowflake
+pip install snowflake-connector-python pandas
+```
+
+---
+
+## DuckDB Quick Start
 
 ### Using Python
 
@@ -117,6 +136,138 @@ duckdb my_data.duckdb < sql/01_create_prime_table.sql
 duckdb my_data.duckdb < sql/02_make_inference.sql
 # ... etc
 ```
+
+---
+
+## Snowflake Quick Start
+
+The Snowflake implementation is optimized for matching records between two tables (e.g., matching incoming data against a master reference table).
+
+### Using Python
+
+```python
+from snowflake.snowflake_matcher import match_snowflake_tables
+
+results = match_snowflake_tables(
+    # Connection
+    account="your_account.us-east-1",
+    user="your_user",
+    password="your_password",
+    warehouse="COMPUTE_WH",
+    database="MY_DB",
+    schema="PUBLIC",
+
+    # Table A: Reference/master table (match AGAINST this)
+    table_a="MASTER_VENDORS",
+    id_field_a="VENDOR_ID",
+    text_field_a="VENDOR_NAME",
+
+    # Table B: Records to match (find matches FOR these)
+    table_b="INCOMING_TRANSACTIONS",
+    id_field_b="TRANSACTION_ID",
+    text_field_b="MERCHANT_NAME",
+
+    # Options
+    similarity_threshold=0.5,
+    results_table="MATCH_RESULTS"
+)
+
+print(f"Matched {results['matched']} of {results['total_records']} records")
+```
+
+### Using the Class (More Control)
+
+```python
+from snowflake.snowflake_matcher import SnowflakeMatcher, MatchConfig
+
+# Initialize with credentials
+matcher = SnowflakeMatcher(
+    account="your_account.us-east-1",
+    user="your_user",
+    password="your_password",  # Or use authenticator="externalbrowser" for SSO
+    warehouse="COMPUTE_WH",
+    database="MY_DB",
+    schema="PUBLIC"
+)
+
+# Add custom stop words for your domain
+matcher.add_stop_words({"services", "solutions", "group", "international"})
+
+# Configure the match
+config = MatchConfig(
+    table_a="MASTER_VENDORS",
+    id_field_a="VENDOR_ID",
+    text_field_a="VENDOR_NAME",
+    table_b="INCOMING_DATA",
+    id_field_b="RECORD_ID",
+    text_field_b="MERCHANT_NAME",
+    similarity_threshold=0.5,
+    results_table="VENDOR_MATCHES"
+)
+
+# Run matching
+with matcher:
+    results = matcher.match_tables(config)
+
+    # Get results as pandas DataFrame
+    df = matcher.get_results_df(config)
+    df.to_csv("matches.csv", index=False)
+```
+
+### Using SQL Only
+
+Run `snowflake/matching_between_tables.sql` directly in Snowflake after replacing these placeholders:
+
+| Placeholder | Description | Example |
+|-------------|-------------|---------|
+| `{{DATABASE}}` | Your database | `MY_DB` |
+| `{{SCHEMA}}` | Your schema | `PUBLIC` |
+| `{{TABLE_A}}` | Reference table | `MASTER_VENDORS` |
+| `{{TABLE_B}}` | Table to match | `INCOMING_DATA` |
+| `{{ID_FIELD_A}}` | ID column in Table A | `VENDOR_ID` |
+| `{{ID_FIELD_B}}` | ID column in Table B | `RECORD_ID` |
+| `{{TEXT_FIELD_A}}` | Text column in Table A | `VENDOR_NAME` |
+| `{{TEXT_FIELD_B}}` | Text column in Table B | `MERCHANT_NAME` |
+| `{{SIMILARITY_THRESHOLD}}` | Minimum match score | `0.5` |
+
+### Snowflake Output Schema
+
+Results are written to your specified results table:
+
+| Column | Description |
+|--------|-------------|
+| `table_b_id` | ID from the records you're matching |
+| `table_b_text` | Original text from Table B |
+| `matched_table_a_id` | Matched ID from Table A (NULL if unmatched) |
+| `matched_table_a_text` | Matched text from Table A |
+| `similarity_score` | Match score (higher = better match) |
+| `match_status` | `'MATCHED'` or `'UNMATCHED'` |
+
+### Snowflake Authentication Options
+
+```python
+# Option 1: Password
+matcher = SnowflakeMatcher(
+    account="...", user="...", password="your_password", ...
+)
+
+# Option 2: SSO (opens browser)
+matcher = SnowflakeMatcher(
+    account="...", user="your_email@company.com",
+    authenticator="externalbrowser", ...
+)
+
+# Option 3: Environment variables
+import os
+matcher = SnowflakeMatcher(
+    account=os.environ["SNOWFLAKE_ACCOUNT"],
+    user=os.environ["SNOWFLAKE_USER"],
+    password=os.environ["SNOWFLAKE_PASSWORD"],
+    ...
+)
+```
+
+---
 
 ## Configuration
 
@@ -159,6 +310,16 @@ Graph-based clustering using recursive CTEs:
 - Each record starts in its own cluster
 - Records sharing high-scoring matches are merged
 - Minimum cluster ID propagates through the graph
+
+## Tuning Tips
+
+| Issue | Solution |
+|-------|----------|
+| Too few matches | Lower `similarity_threshold` (try 0.3-0.4) |
+| Too many false matches | Raise `similarity_threshold` (try 0.6-0.7) |
+| Common words causing bad matches | Add domain-specific stop words |
+| Short text fields | Lower `min_token_length` to 1 |
+| Need to match on multiple fields | Concatenate fields before matching |
 
 ## Best Practices
 
